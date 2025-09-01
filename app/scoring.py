@@ -1,1 +1,2 @@
-O código do scoring que está no segundo artefato
+from typing import Dict, Any, List
+import re
