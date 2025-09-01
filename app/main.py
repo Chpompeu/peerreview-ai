@@ -1,1 +1,2 @@
-O código do FastAPI que está no primeiro artefato acima
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
