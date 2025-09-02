@@ -4,12 +4,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Dict, Any
-from .scoring import score_with_llm, DIMENSIONS
+from .scoring import score_with_llm
 
 app = FastAPI(title="PeerReview AI — Heurístico MVP", version="0.1.0")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+# Definir as dimensões aqui no main.py, pois elas não são mais importadas de scoring.py
+DIMENSIONS = [
+    "Relevância e Originalidade",
+    "Rigor Metodológico",
+    "Qualidade da Escrita",
+    "Fundamentação Teórica",
+    "Resultados e Discussão"
+]
 
 class AnalyzePayload(BaseModel):
     text: str
