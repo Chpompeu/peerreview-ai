@@ -1,205 +1,66 @@
-from typing import Dict, Any, List
-import re
-import spacy
+import os
+import requests
+import json
+from typing import Dict, Any
 
-# Tente carregar o modelo de português. Se não estiver instalado, você deve instalá-lo
-# com o comando 'python -m spacy download pt_core_news_sm'
-try:
-    nlp = spacy.load("pt_core_news_sm")
-except OSError:
-    print("Modelo 'pt_core_news_sm' não encontrado. Por favor, execute 'python -m spacy download pt_core_news_sm'")
-    nlp = None
-
-DIMENSIONS = [
-    "Relevância e Originalidade",
-    "Rigor Metodológico",
-    "Qualidade da Escrita",
-    "Fundamentação Teórica",
-    "Resultados e Discussão"
-]
-
-SECTION_HINTS = {
-    "introdução": ["introdução", "contexto", "motivação", "objetivo"],
-    "metodologia": ["método", "metodologia", "procedimentos", "amostra", "amostragem", "instrumento"],
-    "resultados": ["resultados", "achados", "achado", "experimentos", "análise"],
-    "discussão": ["discussão", "implicações", "interpretação", "limitações"],
-    "conclusões": ["conclusão", "conclusões", "trabalhos futuros", "futuros"]
-}
-
-CITATION_PATTERNS = [
-    re.compile(r"\((?:[A-Z][a-zA-Z]+(?:,?\s*&?\s*[A-Z][a-zA-Z]+)*,\s*(?:19|20)\d{2})\)"),
-    re.compile(r"\[(?:\d{1,3})(?:,?\s*\d{1,3}|-\d{1,3})*\]")
-]
-
-def count_citations(text: str) -> int:
+def score_with_llm(text: str) -> Dict[str, Any]:
     """
-    Conta citações usando padrões de regex mais abrangentes.
+    Gera uma análise completa do texto usando um LLM (Modelo de Linguagem Grande).
     """
-    total = 0
-    for pat in CITATION_PATTERNS:
-        total += len(pat.findall(text))
-    total += len(re.findall(r'[A-Z][a-zA-Z]+\s*\((?:19|20)\d{2}\)', text))
-    return total
-
-def section_coverage(text: str) -> Dict[str, int]:
-    """
-    Usa um método mais robusto para detectar seções.
-    Poderia ser expandido para usar PLN para identificar a estrutura do documento.
-    """
-    t = text.lower()
-    cov = {}
-    for sec, hints in SECTION_HINTS.items():
-        hits = sum(1 for h in hints if h in t)
-        cov[sec] = hits
-    return cov
-
-def readability_signals(text: str) -> Dict[str, Any]:
-    """
-    Sinais de legibilidade melhorados.
-    """
-    words = re.findall(r"\w+", text, flags=re.UNICODE)
-    sentences = re.split(r"[.!?]\s+", text.strip())
-    
-    word_count = len(words)
-    sentence_count = len(sentences)
-    
-    avg_word_len = (sum(len(w) for w in words) / word_count) if word_count > 0 else 0
-    avg_sentence_words = (sum(len(s.split()) for s in sentences) / sentence_count) if sentence_count > 0 else 0
-
-    flesch_kincaid = 0
-    if word_count > 0 and sentence_count > 0:
-        flesch_kincaid = 0.39 * avg_sentence_words + 11.8 * avg_word_len
-    
-    return {
-        "word_count": word_count,
-        "sentence_count": sentence_count,
-        "avg_word_len": avg_word_len,
-        "avg_sentence_words": avg_sentence_words,
-        "flesch_kincaid": flesch_kincaid
-    }
-
-def clamp(x: float, lo: float = 1.0, hi: float = 10.0) -> float:
-    return max(lo, min(hi, x))
-
-def explain(label: str, details: List[str]) -> str:
-    bullet = "; ".join(details)
-    return f"{label}: {bullet}." if details else f"{label}: sem evidências claras."
-
-def score(text: str) -> Dict[str, Any]:
-    text = text.strip()
-    if not text:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
         return {
-            "scores": {d: 1 for d in DIMENSIONS},
-            "explainability": {d: "Texto vazio, atribuído mínimo 1." for d in DIMENSIONS},
-            "signals": {}
+            "error": "Chave de API do Gemini não configurada. Defina a variável de ambiente GEMINI_API_KEY."
         }
-    
-    # Use PLN se o modelo estiver carregado
-    tokens = []
-    if nlp:
-        doc = nlp(text)
-        tokens = [token.text.lower() for token in doc]
 
-    cov = section_coverage(text)
-    cites = count_citations(text)
-    read = readability_signals(text)
-    
-    explanations = {}
+    # Prompt para o LLM
+    prompt_text = f"""
+    Você é um assistente de revisão de pares especializado em artigos acadêmicos brasileiros.
+    Analise o seguinte texto e forneça uma resposta em formato JSON com as seguintes chaves:
+    1. 'scores': Um objeto com notas de 1 a 100 para 'Relevância e Originalidade', 'Rigor Metodológico', 'Qualidade da Escrita', 'Fundamentação Teórica' e 'Resultados e Discussão'.
+    2. 'explainability': Um objeto com uma breve explicação para cada nota.
+    3. 'recommendations': Uma lista de três a cinco recomendações específicas e acionáveis para melhorar o texto.
 
-    # Relevância e Originalidade
-    novelty_signals = sum(1 for k in ["propomos", "apresentamos", "neste trabalho", "contribuição", "novel", "novo", "inédito"]
-                          if k in text.lower())
-    rel_score = 5 + 2 * novelty_signals
-    rel_score += 1 if "lacuna" in text.lower() or "gap" in text.lower() else 0
-    rel_score = clamp(rel_score)
-    explanations["Relevância e Originalidade"] = explain(
-        "Base", [
-            f"sinais de novidade={novelty_signals}",
-            "menciona lacuna" if ("lacuna" in text.lower() or "gap" in text.lower()) else "sem menção explícita a lacuna"
-        ]
-    )
+    O texto para análise é:
+    "{text}"
+    """
 
-    # Rigor Metodológico
-    meth_hits = cov.get("metodologia", 0)
-    rigor_score = 4 + 2 * meth_hits
-    if re.search(r"\b(amostra|amostragem|dataset|base de dados)\b", text.lower()):
-        rigor_score += 2
-    if re.search(r"\b(reprodutibil|protocolo|pré\-registro|pré registro)\b", text.lower()):
-        rigor_score += 1
-    if re.search(r"\b(quantitativ|qualitativ)\b", text.lower()):
-        rigor_score += 1.5
-    rigor_score = clamp(rigor_score)
-    explanations["Rigor Metodológico"] = explain(
-        "Base", [
-            f"sinais de metodologia={meth_hits}",
-            "menciona amostra/dataset" if re.search(r"\b(amostra|amostragem|dataset|base de dados)\b", text.lower()) else "sem amostra/dataset",
-            "menciona reprodutibilidade/protocolo" if re.search(r"\b(reprodutibil|protocolo|pré\-registro|pré registro)\b", text.lower()) else "sem menção a reprodutibilidade",
-            "menciona abordagem quantitativa/qualitativa" if re.search(r"\b(quantitativ|qualitativ)\b", text.lower()) else "sem menção a tipo de dado"
-        ]
-    )
-
-    # Qualidade da Escrita
-    qc = 7.0
-    if read["flesch_kincaid"] < 20 or read["flesch_kincaid"] > 70:
-         qc -= 1.0
-    if read["word_count"] < 150:
-        qc -= 1.5
-    if read["avg_sentence_words"] > 35:
-        qc -= 1.5
-    qc = clamp(qc)
-    explanations["Qualidade da Escrita"] = explain(
-        "Base", [
-            f"média palavras por sentença={read['avg_sentence_words']:.1f}",
-            f"tamanho do texto={read['word_count']} palavras",
-            f"Índice Flesch-Kincaid (simplificado)={read['flesch_kincaid']:.1f}"
-        ]
-    )
-
-    # Fundamentação Teórica
-    ft = 3 + min(cites, 10) * 0.6
-    if cov.get("introdução", 0) > 0:
-        ft += 1
-    if re.search(r"\b(literatura|referênci)\b", text.lower()):
-        ft += 1.0
-    ft = clamp(ft)
-    explanations["Fundamentação Teórica"] = explain(
-        "Base", [
-            f"citações detectadas={cites}",
-            "há sinais de introdução" if cov.get("introdução", 0) > 0 else "sem sinais de introdução",
-            "menciona literatura/referências" if re.search(r"\b(literatura|referênci)\b", text.lower()) else "sem menção à literatura"
-        ]
-    )
-
-    # Resultados e Discussão
-    rd = 3 + 1.5 * cov.get("resultados", 0) + 1.5 * cov.get("discussão", 0)
-    if "limitações" in text.lower() or "limitação" in text.lower():
-        rd += 1.5
-    if cov.get("conclusões", 0) > 0:
-        rd += 1.0
-    rd = clamp(rd)
-    explanations["Resultados e Discussão"] = explain(
-        "Base", [
-            f"sinais de resultados={cov.get('resultados', 0)}",
-            f"sinais de discussão={cov.get('discussão', 0)}",
-            "menciona limitações" if ("limitações" in text.lower() or "limitação" in text.lower()) else "sem menção a limitações",
-            "menciona conclusões/trabalhos futuros" if cov.get("conclusões", 0) > 0 else "sem menção a conclusões"
-        ]
-    )
-
-    scores = {
-        "Relevância e Originalidade": round(rel_score, 1),
-        "Rigor Metodológico": round(rigor_score, 1),
-        "Qualidade da Escrita": round(qc, 1),
-        "Fundamentação Teórica": round(ft, 1),
-        "Resultados e Discussão": round(rd, 1)
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key
     }
-
-    return {
-        "scores": scores,
-        "explainability": explanations,
-        "signals": {
-            "section_coverage": cov,
-            "citations": cites,
-            "readability": read
+    
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt_text}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json"
         }
     }
+
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(data))
+        response.raise_for_status()
+        llm_output = response.json()
+        
+        # A API retorna um JSON dentro de uma string de texto. Precisamos parsear
+        # para garantir que o formato é o esperado
+        
+        return llm_output
+
+    except requests.exceptions.HTTPError as errh:
+        return {"error": f"Erro HTTP: {errh}"}
+    except requests.exceptions.ConnectionError as errc:
+        return {"error": f"Erro de Conexão: {errc}"}
+    except requests.exceptions.Timeout as errt:
+        return {"error": f"Tempo de espera excedido: {errt}"}
+    except requests.exceptions.RequestException as err:
+        return {"error": f"Erro geral na requisição: {err}"}
+    except Exception as e:
+        return {"error": f"Erro inesperado no processamento: {e}"}
