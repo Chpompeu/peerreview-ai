@@ -49,18 +49,24 @@ def score_with_llm(text: str) -> Dict[str, Any]:
         response.raise_for_status()
         llm_output = response.json()
         
-        # A API retorna um JSON dentro de uma string de texto. Precisamos parsear
-        # para garantir que o formato é o esperado
+        # O LLM retorna o JSON como parte de um texto, precisamos parsear
+        text_content = llm_output.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
         
-        return llm_output
+        if not text_content:
+            return {"error": "A resposta do LLM não contém texto."}
+
+        # Tenta carregar o JSON do texto retornado pelo LLM
+        return json.loads(text_content)
 
     except requests.exceptions.HTTPError as errh:
-        return {"error": f"Erro HTTP: {errh}"}
+        return {"error": f"Erro HTTP: {errh.response.text}"}
     except requests.exceptions.ConnectionError as errc:
         return {"error": f"Erro de Conexão: {errc}"}
     except requests.exceptions.Timeout as errt:
         return {"error": f"Tempo de espera excedido: {errt}"}
     except requests.exceptions.RequestException as err:
         return {"error": f"Erro geral na requisição: {err}"}
+    except json.JSONDecodeError as jde:
+        return {"error": f"A resposta do LLM não é um JSON válido: {jde.msg}. Conteúdo recebido: {text_content}"}
     except Exception as e:
         return {"error": f"Erro inesperado no processamento: {e}"}
