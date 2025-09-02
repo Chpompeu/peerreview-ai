@@ -1,8 +1,14 @@
 from typing import Dict, Any, List
 import re
-# Importação conceitual. Para implementar, você precisaria instalar e configurar uma biblioteca de PLN como spacy ou nltk.
-# import spacy 
-# nlp = spacy.load("pt_core_news_sm")
+import spacy
+
+# Tente carregar o modelo de português. Se não estiver instalado, você deve instalá-lo
+# com o comando 'python -m spacy download pt_core_news_sm'
+try:
+    nlp = spacy.load("pt_core_news_sm")
+except OSError:
+    print("Modelo 'pt_core_news_sm' não encontrado. Por favor, execute 'python -m spacy download pt_core_news_sm'")
+    nlp = None
 
 DIMENSIONS = [
     "Relevância e Originalidade",
@@ -20,7 +26,6 @@ SECTION_HINTS = {
     "conclusões": ["conclusão", "conclusões", "trabalhos futuros", "futuros"]
 }
 
-# Regex para citar padrões como (Autor, Ano), [1], [1, 2], [1-3]
 CITATION_PATTERNS = [
     re.compile(r"\((?:[A-Z][a-zA-Z]+(?:,?\s*&?\s*[A-Z][a-zA-Z]+)*,\s*(?:19|20)\d{2})\)"),
     re.compile(r"\[(?:\d{1,3})(?:,?\s*\d{1,3}|-\d{1,3})*\]")
@@ -33,7 +38,6 @@ def count_citations(text: str) -> int:
     total = 0
     for pat in CITATION_PATTERNS:
         total += len(pat.findall(text))
-    # Adicionar contagem de citações com nome e ano, ex: 'Silva (2020)'
     total += len(re.findall(r'[A-Z][a-zA-Z]+\s*\((?:19|20)\d{2}\)', text))
     return total
 
@@ -62,13 +66,9 @@ def readability_signals(text: str) -> Dict[str, Any]:
     avg_word_len = (sum(len(w) for w in words) / word_count) if word_count > 0 else 0
     avg_sentence_words = (sum(len(s.split()) for s in sentences) / sentence_count) if sentence_count > 0 else 0
 
-    # Exemplo de uma métrica de legibilidade: Índice de Legibilidade de Flesch-Kincaid
-    # F-K = 0.39 * (palavras / frases) + 11.8 * (sílabas / palavras) - 15.59
-    # Para simplificar sem contar sílabas, podemos usar uma aproximação ou a fórmula original:
-    # A fórmula original é difícil de implementar sem um contador de sílabas. A proposta a seguir é uma aproximação.
     flesch_kincaid = 0
     if word_count > 0 and sentence_count > 0:
-        flesch_kincaid = 0.39 * avg_sentence_words + 11.8 * avg_word_len # Esta é uma simplificação
+        flesch_kincaid = 0.39 * avg_sentence_words + 11.8 * avg_word_len
     
     return {
         "word_count": word_count,
@@ -90,8 +90,15 @@ def score(text: str) -> Dict[str, Any]:
     if not text:
         return {
             "scores": {d: 1 for d in DIMENSIONS},
-            "explainability": {d: "Texto vazio, atribuído mínimo 1." for d in DIMENSIONS}
+            "explainability": {d: "Texto vazio, atribuído mínimo 1." for d in DIMENSIONS},
+            "signals": {}
         }
+    
+    # Use PLN se o modelo estiver carregado
+    tokens = []
+    if nlp:
+        doc = nlp(text)
+        tokens = [token.text.lower() for token in doc]
 
     cov = section_coverage(text)
     cites = count_citations(text)
@@ -99,9 +106,7 @@ def score(text: str) -> Dict[str, Any]:
     
     explanations = {}
 
-    # Relevância e Originalidade (Melhorado)
-    # A presença de "apresentamos" ou "propomos" não significa necessariamente originalidade.
-    # O ideal seria usar PLN para identificar verbos no presente do indicativo que sugerem uma ação de pesquisa.
+    # Relevância e Originalidade
     novelty_signals = sum(1 for k in ["propomos", "apresentamos", "neste trabalho", "contribuição", "novel", "novo", "inédito"]
                           if k in text.lower())
     rel_score = 5 + 2 * novelty_signals
@@ -114,14 +119,13 @@ def score(text: str) -> Dict[str, Any]:
         ]
     )
 
-    # Rigor Metodológico (Melhorado)
+    # Rigor Metodológico
     meth_hits = cov.get("metodologia", 0)
     rigor_score = 4 + 2 * meth_hits
     if re.search(r"\b(amostra|amostragem|dataset|base de dados)\b", text.lower()):
         rigor_score += 2
     if re.search(r"\b(reprodutibil|protocolo|pré\-registro|pré registro)\b", text.lower()):
         rigor_score += 1
-    # Adicionando um sinal para a menção de dados quantitativos ou qualitativos
     if re.search(r"\b(quantitativ|qualitativ)\b", text.lower()):
         rigor_score += 1.5
     rigor_score = clamp(rigor_score)
@@ -134,10 +138,8 @@ def score(text: str) -> Dict[str, Any]:
         ]
     )
 
-    # Qualidade da Escrita (Melhorado)
-    # A nota passa a ser mais influenciada pela métrica de legibilidade
+    # Qualidade da Escrita
     qc = 7.0
-    # Reduz a pontuação se a legibilidade for muito baixa ou alta (indica texto muito simples)
     if read["flesch_kincaid"] < 20 or read["flesch_kincaid"] > 70:
          qc -= 1.0
     if read["word_count"] < 150:
@@ -153,12 +155,10 @@ def score(text: str) -> Dict[str, Any]:
         ]
     )
 
-    # Fundamentação Teórica (Melhorado)
-    # A nota passa a ser mais influenciada pela contagem de citações
+    # Fundamentação Teórica
     ft = 3 + min(cites, 10) * 0.6
     if cov.get("introdução", 0) > 0:
         ft += 1
-    # Adicionando um bônus se o texto menciona "literatura" ou "referências"
     if re.search(r"\b(literatura|referênci)\b", text.lower()):
         ft += 1.0
     ft = clamp(ft)
@@ -170,11 +170,10 @@ def score(text: str) -> Dict[str, Any]:
         ]
     )
 
-    # Resultados e Discussão (Melhorado)
+    # Resultados e Discussão
     rd = 3 + 1.5 * cov.get("resultados", 0) + 1.5 * cov.get("discussão", 0)
     if "limitações" in text.lower() or "limitação" in text.lower():
         rd += 1.5
-    # Bônus se houver menção a "conclusões" ou "trabalhos futuros"
     if cov.get("conclusões", 0) > 0:
         rd += 1.0
     rd = clamp(rd)
